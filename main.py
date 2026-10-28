@@ -1,170 +1,181 @@
-import telebot
-from telebot import types
+import asyncio
+import os
 
-# توکن و اطلاعات ادمین
-TOKEN = "9133301747:AAHhCl_YTppqCmlUi2NKjb1ioC1gKEjEa9Q"
-ADMIN_ID = "8517565749"
-CHANNEL_ID = "6104337375248422"
-ADMIN_NAME = "Mehdi Hosseini"
-CARD_INFO = "Bank Mellat"
+from aiogram import Bot, Dispatcher, F
+from aiogram.filters import CommandStart
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
+from aiohttp import web
 
-bot = telebot.TeleBot(TOKEN)
+BOT_TOKEN = os.environ["BOT_TOKEN"]
+SUPPORT_URL = "https://t.me/Mahdi_hosseini1994"
 
-# ساختار محصولات (خرده‌فروشی و عمده‌فروشی)
-PRODUCTS = {
-    "retail": {
-        "shirt_minima": {"name": "تیشرت مینیمال باکیفیت", "price": "180,000 تومان"},
-        "hoodie_sport": {"name": "هودی لش اسپرت", "price": "350,000 تومان"},
-        "pants_classic": {"name": "شلوار کتان کلاسیک", "price": "290,000 تومان"}
-    },
-    "wholesale": {
-        "shirt_pack": {"name": "تخفیف عمده - هماهنگی با امین", "price": "پک عمده تیشرت مینیمال"},
-        "hoodie_pack": {"name": "تخفیف عمده - هماهنگی با امین", "price": "پک عمده هودی لش"},
-        "pants_pack": {"name": "تخفیف عمده - هماهنگی با امین", "price": "پک عمده شلوار کتان"}
-    }
+MODELS = {
+    "pro": ("مدل پرو", "۹۹۸ هزار تومن"),
+    "promax": ("مدل پرومکس", "۱۳۹۹ هزار تومن"),
+    "premium": ("مدل پرمیوم", "۱۵۹۹ هزار تومن"),
 }
 
-user_orders = {}
+dp = Dispatcher()
 
-def get_main_menu():
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(
-        types.KeyboardButton("🛍 منوی اصلی خرید"),
-        types.KeyboardButton("🛒 سبد خرید / وضعیت سفارش")
+
+class Order(StatesGroup):
+    waiting_custom_qty = State()
+
+
+def nav_row(back_to):
+    return [
+        InlineKeyboardButton(text="🔙 بازگشت به مرحله قبل", callback_data=back_to),
+        InlineKeyboardButton(text="🏠 بازگشت به منوی اصلی", callback_data="main"),
+    ]
+
+
+def main_menu():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🛍 خرید تکی", callback_data="buy_single"),
+                InlineKeyboardButton(text="📦 خرید عمده", callback_data="buy_bulk"),
+            ],
+            [InlineKeyboardButton(text="🎁 دریافت نمونه کار رایگان", callback_data="free_sample")],
+            [InlineKeyboardButton(text="🤝 همکاری در فروش", callback_data="partnership")],
+            [
+                InlineKeyboardButton(text="❓ سوالات متداول", callback_data="faq"),
+                InlineKeyboardButton(text="📞 پشتیبانی", url=SUPPORT_URL),
+            ],
+        ]
     )
-    return markup
 
-@bot.message_handler(commands=['start'])
-def send_welcome(message):
-    user_id = message.from_user.id
-    if user_id not in user_orders:
-        user_orders[user_id] = {"items": [], "type": None}
-    
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        types.InlineKeyboardButton("🛒 خرده‌فروشی", callback_data="type_retail"),
-        types.InlineKeyboardButton("📦 عمده‌فروشی", callback_data="type_wholesale")
+
+def models_menu():
+    rows = [
+        [InlineKeyboardButton(text=f"{name} | {price}", callback_data=f"model:{key}")]
+        for key, (name, price) in MODELS.items()
+    ]
+    rows.append(nav_row("main"))
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def qty_menu(key):
+    rows = [
+        [InlineKeyboardButton(text="1 عدد", callback_data=f"qty:{key}:1")],
+        [InlineKeyboardButton(text="2 عدد", callback_data=f"qty:{key}:2")],
+        [InlineKeyboardButton(text="3 عدد", callback_data=f"qty:{key}:3")],
+        [InlineKeyboardButton(text="✏️ انتخاب تعداد دلخواه", callback_data=f"qty_custom:{key}")],
+        nav_row("buy_single"),
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def order_summary(key, qty):
+    name, price = MODELS[key]
+    return (
+        f"✅ {name}\n"
+        f"💰 قیمت: {price}\n"
+        f"🔢 تعداد: {qty} عدد\n\n"
+        "(مرحلهٔ بعد: تأیید سفارش و پرداخت)"
     )
-    bot.send_message(
-        message.chat.id, 
-        "سلام! به فروشگاه «Vihani» خوش آمدید.\nلطفاً نوع خرید خود را انتخاب کنید:", 
-        reply_markup=markup
+
+
+MAIN_TEXT = "سلام، به ربات ما خوش اومدی 👋\nلطفاً یکی از گزینه‌های زیر رو انتخاب کن:"
+MODELS_TEXT = "🛍 خرید تکی\nلطفاً مدل مورد نظرت رو انتخاب کن:"
+
+
+@dp.message(CommandStart())
+async def start(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer(MAIN_TEXT, reply_markup=main_menu())
+
+
+@dp.callback_query(F.data == "main")
+async def go_main(call: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await call.message.edit_text(MAIN_TEXT, reply_markup=main_menu())
+    await call.answer()
+
+
+@dp.callback_query(F.data == "buy_single")
+async def buy_single(call: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await call.message.edit_text(MODELS_TEXT, reply_markup=models_menu())
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("model:"))
+async def choose_model(call: CallbackQuery, state: FSMContext):
+    await state.clear()
+    key = call.data.split(":", 1)[1]
+    name, price = MODELS[key]
+    text = f"✅ {name} | {price}\n\nچند عدد می‌خوای؟ تعداد سفارش رو انتخاب کن:"
+    await call.message.edit_text(text, reply_markup=qty_menu(key))
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("qty:"))
+async def choose_qty(call: CallbackQuery):
+    _, key, qty = call.data.split(":")
+    kb = InlineKeyboardMarkup(inline_keyboard=[nav_row(f"model:{key}")])
+    await call.message.edit_text(order_summary(key, qty), reply_markup=kb)
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("qty_custom:"))
+async def custom_qty(call: CallbackQuery, state: FSMContext):
+    key = call.data.split(":", 1)[1]
+    await state.set_state(Order.waiting_custom_qty)
+    await state.update_data(model=key)
+    kb = InlineKeyboardMarkup(inline_keyboard=[nav_row(f"model:{key}")])
+    await call.message.edit_text(
+        "✏️ تعداد دلخواهت رو به صورت عدد بفرست (مثلاً 5):", reply_markup=kb
     )
+    await call.answer()
 
-@bot.message_handler(func=lambda message: message.text == "🛍 منوی اصلی خرید")
-def main_menu_handler(message):
-    send_welcome(message)
 
-@bot.message_handler(func=lambda message: message.text == "🛒 سبد خرید / وضعیت سفارش")
-def show_cart(message):
-    user_id = message.from_user.id
-    if user_id not in user_orders or not user_orders[user_id]["items"]:
-        bot.send_message(message.chat.id, "🛒 سبد خرید شما خالی است.", reply_markup=get_main_menu())
+DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+
+
+@dp.message(Order.waiting_custom_qty, F.text)
+async def receive_custom_qty(message: Message, state: FSMContext):
+    text = message.text.strip().translate(DIGITS)
+    if not text.isdigit() or int(text) < 1:
+        await message.answer("لطفاً فقط یه عدد صحیح بفرست، مثلاً 5")
         return
-    
-    text = "🛒 **سبد خرید شما:**\n\n"
-    for item in user_orders[user_id]["items"]:
-        text += f"- {item['name']} (تعداد: {item['qty']})\n"
-    
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("✅ ثبت نهایی سفارش", callback_data="checkout"))
-    bot.send_message(message.chat.id, text, parse_mode="Markdown", reply_markup=markup)
+    data = await state.get_data()
+    key = data["model"]
+    await state.clear()
+    kb = InlineKeyboardMarkup(inline_keyboard=[nav_row(f"model:{key}")])
+    await message.answer(order_summary(key, int(text)), reply_markup=kb)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("type_"))
-def select_type(call):
-    user_id = call.from_user.id
-    if user_id not in user_orders:
-        user_orders[user_id] = {"items": [], "type": None}
-        
-    buying_type = call.data.split("_")[1]
-    user_orders[user_id]["type"] = buying_type
-    
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    if buying_type == "retail":
-        for key, val in PRODUCTS["retail"].items():
-            markup.add(types.InlineKeyboardButton(f"{val['name']} - {val['price']}", callback_data=f"add_{key}"))
-        bot.edit_message_text("محصولات بخش خرده‌فروشی:\nلطفاً یک محصول را انتخاب کنید:", call.message.chat.id, call.message.message_id, reply_markup=markup)
-    else:
-        for key, val in PRODUCTS["wholesale"].items():
-            markup.add(types.InlineKeyboardButton(f"{val['name']}", callback_data=f"add_{key}"))
-        bot.edit_message_text("محصولات بخش عمده‌فروشی:\nلطفاً پک عمده را انتخاب کنید:", call.message.chat.id, call.message.message_id, reply_markup=markup)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("add_"))
-def add_to_cart(call):
-    user_id = call.from_user.id
-    product_key = call.data.split("_", 1)[1]
-    
-    # پیدا کردن محصول در خرده یا عمده
-    product = PRODUCTS["retail"].get(product_key) or PRODUCTS["wholesale"].get(product_key)
-    if not product:
-        return
-        
-    if user_id not in user_orders:
-        user_orders[user_id] = {"items": [], "type": "retail"}
-        
-    user_orders[user_id]["items"].append({"name": product["name"], "qty": 1})
-    bot.answer_callback_query(call.id, "✅ به سبد خرید اضافه شد!")
-    
-    markup = types.InlineKeyboardMarkup()
-    markup.add(
-        types.InlineKeyboardButton("🛒 مشاهده سبد خرید", callback_data="view_cart"),
-        types.InlineKeyboardButton("🛍 ادامه خرید", callback_data=f"type_{user_orders[user_id]['type']}")
-    )
-    bot.send_message(call.message.chat.id, f"محصول «{product['name']}» به سبد خرید اضافه شد.", reply_markup=markup)
+@dp.callback_query(F.data.in_({"buy_bulk", "free_sample", "partnership", "faq"}))
+async def placeholder(call: CallbackQuery):
+    await call.answer("این بخش به‌زودی فعال می‌شه 🙏", show_alert=True)
 
-@bot.callback_query_handler(func=lambda call: call.data == "view_cart")
-def view_cart_callback(call):
-    user_id = call.from_user.id
-    if user_id not in user_orders or not user_orders[user_id]["items"]:
-        bot.send_message(call.message.chat.id, "🛒 سبد خرید شما خالی است.", reply_markup=get_main_menu())
-        return
-    
-    text = "🛒 **سبد خرید شما:**\n\n"
-    for item in user_orders[user_id]["items"]:
-        text += f"- {item['name']} (تعداد: {item['qty']})\n"
-    
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("✅ ثبت نهایی سفارش", callback_data="checkout"))
-    bot.send_message(call.message.chat.id, text, parse_mode="Markdown", reply_markup=markup)
 
-@bot.callback_query_handler(func=lambda call: call.data == "checkout")
-def checkout(call):
-    user_id = call.from_user.id
-    bot.send_message(call.message.chat.id, "لطفاً نام و نام خانوادگی خود را ارسال کنید:")
-    bot.register_next_step_handler(call.message, get_name)
+async def health(request):
+    return web.Response(text="OK")
 
-def get_name(message):
-    user_id = message.from_user.id
-    user_orders[user_id]["name"] = message.text
-    bot.send_message(message.chat.id, "لطفاً شماره تماس خود را ارسال کنید:")
-    bot.register_next_step_handler(message, get_phone)
 
-def get_phone(message):
-    user_id = message.from_user.id
-    user_orders[user_id]["phone"] = message.text
-    bot.send_message(message.chat.id, "لطفاً آدرس دقیق پستی خود را ارسال کنید:")
-    bot.register_next_step_handler(message, get_address)
+async def run_web():
+    app = web.Application()
+    app.router.add_get("/", health)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", "10000"))
+    await web.TCPSite(runner, "0.0.0.0", port).start()
 
-def get_address(message):
-    user_id = message.from_user.id
-    user_orders[user_id]["address"] = message.text
-    
-    order = user_orders[user_id]
-    summary = f"📋 **فاکتور نهایی سفارش:**\n\n"
-    summary += f"نام: {order['name']}\nتلفن: {order['phone']}\nآدرس: {order['address']}\n\nمحصولات:\n"
-    for item in order["items"]:
-        summary += f"- {item['name']}\n"
-    
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("💳 پرداخت و ثبت نهایی", callback_data="final_pay"))
-    bot.send_message(message.chat.id, summary, parse_mode="Markdown", reply_markup=markup)
 
-@bot.callback_query_handler(func=lambda call: call.data == "final_pay")
-def final_pay(call):
-    user_id = call.from_user.id
-    bot.send_message(call.message.chat.id, f"لطفاً مبلغ را به کارت {CARD_INFO} واریز کرده و تصویر فیش واریزی را همینجا بفرستید.")
+async def main():
+    await run_web()
+    bot = Bot(BOT_TOKEN)
+    await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
-    print("Bot is running...")
-    bot.infinity_polling()
-    
+    asyncio.run(main())
