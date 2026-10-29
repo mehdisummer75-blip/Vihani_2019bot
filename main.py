@@ -15,6 +15,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     Message,
 )
+import aiohttp
 from aiohttp import web
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
@@ -35,6 +36,12 @@ STATUS = {
 
 LINE = "━━━━━━━━━━━━━━━━━━"
 MAX_QTY_DIGITS = 6
+
+FRESH_NOTE = (
+    "\n💡 شناسه فاکتور رو نگه دار؛ از «پیگیری سفارش» تو منوی اصلی "
+    "می‌تونی وضعیتش رو ببینی."
+    "\n⚠️ در صورت بازگشت به منوی اصلی یا مرحلهٔ قبل، فاکتور لغو می‌شود."
+)
 
 dp = Dispatcher()
 
@@ -86,6 +93,16 @@ def set_status(no, status):
     db.commit()
 
 
+def cancel_if_pending(no, user_id):
+    """فاکتور در انتظار پرداختِ همین کاربر رو لغو می‌کنه و فاکتور رو برمی‌گردونه."""
+    inv = get_invoice(no)
+    if inv is None or inv["user_id"] != user_id:
+        return None
+    if inv["status"] == "pending":
+        set_status(no, "cancelled")
+    return inv
+
+
 # ---------------------------------------------------------------- ابزارها
 FA_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
 EN_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
@@ -100,7 +117,7 @@ def to_int(text):
     return int(text) if text.isdigit() else None
 
 
-def invoice_text(inv):
+def invoice_text(inv, fresh=False):
     name = MODELS.get(inv["model"], (inv["model"],))[0]
     return (
         f"🧾 <b>فاکتور سفارش</b>\n"
@@ -112,10 +129,8 @@ def invoice_text(inv):
         f"{LINE}\n"
         f"💰 <b>جمع کل: {fa(inv['total'])} تومن</b>\n"
         f"📌 وضعیت: {STATUS.get(inv['status'], inv['status'])}\n"
-        f"{LINE}\n"
-        "💡 شناسه فاکتور رو نگه دار؛ از «پیگیری سفارش» تو منوی اصلی "
-        "می‌تونی وضعیتش رو ببینی."
-    )
+        f"{LINE}"
+    ) + (FRESH_NOTE if fresh else "")
 
 
 # ---------------------------------------------------------------- دکمه‌ها
@@ -124,10 +139,10 @@ class Order(StatesGroup):
     waiting_track = State()
 
 
-def nav_row(back_to):
+def nav_row(back_to, main_cb="main"):
     return [
         InlineKeyboardButton(text="🔙 بازگشت به مرحله قبل", callback_data=back_to),
-        InlineKeyboardButton(text="🏠 بازگشت به منوی اصلی", callback_data="main"),
+        InlineKeyboardButton(text="🏠 بازگشت به منوی اصلی", callback_data=main_cb),
     ]
 
 
@@ -218,22 +233,31 @@ async def choose_model(call: CallbackQuery, state: FSMContext):
 async def choose_qty(call: CallbackQuery):
     _, key, qty = call.data.split(":")
     no = create_invoice(call.from_user.id, key, int(qty))
-    kb = InlineKeyboardMarkup(inline_keyboard=[nav_row(f"invback:{no}")])
-    await call.message.edit_text(invoice_text(get_invoice(no)), reply_markup=kb)
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[nav_row(f"invback:{no}", main_cb=f"invmain:{no}")]
+    )
+    await call.message.edit_text(invoice_text(get_invoice(no), fresh=True), reply_markup=kb)
     await call.answer()
 
 
 @dp.callback_query(F.data.startswith("invback:"))
 async def invoice_back(call: CallbackQuery):
     no = int(call.data.split(":", 1)[1])
-    inv = get_invoice(no)
-    if inv is None or inv["user_id"] != call.from_user.id:
+    inv = cancel_if_pending(no, call.from_user.id)
+    if inv is None:
         await call.answer("این فاکتور پیدا نشد.", show_alert=True)
         return
-    if inv["status"] == "pending":
-        set_status(no, "cancelled")  # برگشت یعنی تغییر سفارش
     key = inv["model"]
     await call.message.edit_text(qty_text(key), reply_markup=qty_menu(key))
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("invmain:"))
+async def invoice_main(call: CallbackQuery, state: FSMContext):
+    no = int(call.data.split(":", 1)[1])
+    cancel_if_pending(no, call.from_user.id)
+    await state.clear()
+    await call.message.edit_text(MAIN_TEXT, reply_markup=main_menu())
     await call.answer()
 
 
@@ -267,8 +291,10 @@ async def receive_custom_qty(message: Message, state: FSMContext):
     key = data["model"]
     await state.clear()
     no = create_invoice(message.from_user.id, key, qty)
-    kb = InlineKeyboardMarkup(inline_keyboard=[nav_row(f"invback:{no}")])
-    await message.answer(invoice_text(get_invoice(no)), reply_markup=kb)
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[nav_row(f"invback:{no}", main_cb=f"invmain:{no}")]
+    )
+    await message.answer(invoice_text(get_invoice(no), fresh=True), reply_markup=kb)
 
 
 @dp.callback_query(F.data == "track")
@@ -318,8 +344,24 @@ async def run_web():
     await web.TCPSite(runner, "0.0.0.0", port).start()
 
 
+async def keep_alive():
+    # هر ۱۰ دقیقه به آدرس خود سرویس سر می‌زنه تا Render ربات رو نخوابونه
+    url = os.environ.get("RENDER_EXTERNAL_URL")
+    if not url:
+        return
+    async with aiohttp.ClientSession() as session:
+        while True:
+            await asyncio.sleep(600)
+            try:
+                async with session.get(url) as resp:
+                    await resp.read()
+            except Exception:
+                pass
+
+
 async def main():
     await run_web()
+    asyncio.create_task(keep_alive())
     bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     await dp.start_polling(bot)
 
