@@ -1,1 +1,3 @@
 aiogram>=3.0
+aiohttp
+pg8000
