@@ -1,7 +1,3 @@
 aiogram>=3.4
 aiohttp
 pg8000
-pytesseract
-opencv-python-headless
-Pillow
-numpy
