@@ -2,3 +2,5 @@ aiogram>=3.25.0
 aiohttp
 pg8000
 Pillow
+arabic-reshaper
+python-bidi
