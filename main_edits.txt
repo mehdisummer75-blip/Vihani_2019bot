@@ -1,0 +1,53 @@
+سه تغییر کوچک توی main.py
+==========================
+
+--- تغییر ۱: توی کلاس GroupGuard ---
+
+الف) خط STAFF_PREFIXES رو اینجوری کن:
+
+    STAFF_PREFIXES = ("pstart", "pdone", "prel", "ptrack", "pprint", "scanok", "scanno")
+
+ب) توی همون کلاس، درست قبل از این خط کامنت:
+        # گروه پرسنل: فقط دستورهای گزارش مجازه ...
+این بلاک رو اضافه کن (هم‌تراز با بقیهٔ if ها):
+
+        if (
+            not is_cb
+            and READY_CHAT_ID
+            and chat.id == READY_CHAT_ID
+            and (event.photo or (event.document and (event.document.mime_type or "").lower().startswith("image/")))
+        ):
+            return await handler(event, data)
+
+
+--- تغییر ۲: هندلر stray_photo ---
+
+این خط:
+    @dp.message(StateFilter(None), F.photo | F.document)
+رو اینجوری کن:
+    @dp.message(StateFilter(None), F.chat.type == "private", F.photo | F.document)
+
+
+--- تغییر ۳: درست قبل از این دو خط ---
+    @dp.message()
+    async def fallback(message: Message):
+این بلاک رو بذار:
+
+import ready_scan
+
+ready_scan.register(
+    dp,
+    dict(
+        READY_CHAT_ID=READY_CHAT_ID,
+        run_db=run_db,
+        q_all=q_all,
+        q_one=q_one,
+        q_exec=q_exec,
+        get_invoice=get_invoice,
+        ready_order_text=ready_order_text,
+        track_kb=track_kb,
+        track_customer_text=track_customer_text,
+        track_url_rows=track_url_rows,
+        menu_kb=menu_kb,
+    ),
+)
