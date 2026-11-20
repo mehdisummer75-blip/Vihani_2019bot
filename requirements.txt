@@ -4,3 +4,7 @@ pg8000
 Pillow
 arabic-reshaper
 python-bidi
+pytesseract
+rapidfuzz
+zxing-cpp
+numpy
